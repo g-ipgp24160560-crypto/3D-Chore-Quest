@@ -226,8 +226,33 @@
 </head>
 <body>
 
+    <!-- LOGIN SCREEN -->
+    <div id="screen-login" class="screen active relative overflow-hidden">
+        <!-- Decorative background elements -->
+        <div class="absolute top-10 left-10 w-32 h-32 bg-yellow-200 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-pulse"></div>
+        <div class="absolute bottom-10 right-10 w-48 h-48 bg-blue-200 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-pulse" style="animation-delay: 1s;"></div>
+        
+        <h1 class="text-4xl md:text-6xl font-black text-center mb-2 text-slate-800 tracking-tight" style="text-shadow: 2px 2px 0px white, 4px 4px 0px var(--accent);">
+            CHORE QUEST 3D
+        </h1>
+        <p class="text-xl md:text-2xl font-bold text-slate-600 mb-8">Pupil Login</p>
+        
+        <div class="panel w-full max-w-sm flex flex-col gap-4 relative z-10">
+            <div>
+                <label for="student-id" class="block font-bold text-slate-700 mb-1 text-left">Student ID or Class Code (Required)</label>
+                <input type="text" id="student-id" class="w-full p-3 border-2 border-slate-300 rounded-xl focus:border-accent focus:outline-none font-bold text-lg text-slate-800" placeholder="e.g. S1234">
+                <p id="login-error" class="text-red-500 font-bold text-sm mt-1 hidden text-left">Please enter a Student ID to continue.</p>
+            </div>
+            <div>
+                <label for="student-class" class="block font-bold text-slate-700 mb-1 text-left">Class (Optional)</label>
+                <input type="text" id="student-class" class="w-full p-3 border-2 border-slate-300 rounded-xl focus:border-accent focus:outline-none font-bold text-lg text-slate-800" placeholder="e.g. 4 Bestari">
+            </div>
+            <button class="btn text-lg mt-4" onclick="loginStudent()">START GAME</button>
+        </div>
+    </div>
+
     <!-- MAIN MENU -->
-    <div id="screen-main-menu" class="screen active relative overflow-hidden">
+    <div id="screen-main-menu" class="screen relative overflow-hidden">
         <!-- Decorative background elements -->
         <div class="absolute top-10 left-10 w-32 h-32 bg-yellow-200 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-pulse"></div>
         <div class="absolute bottom-10 right-10 w-48 h-48 bg-blue-200 rounded-full mix-blend-multiply filter blur-xl opacity-70 animate-pulse" style="animation-delay: 1s;"></div>
@@ -414,9 +439,15 @@
             <h2 class="text-5xl font-black text-amber-500 mb-2" style="text-shadow: 2px 2px 0 #b45309;">LEVEL COMPLETE!</h2>
             <h3 id="complete-level-name" class="text-2xl font-bold mb-6 text-slate-600"></h3>
             
-            <div class="bg-amber-50 p-6 rounded-2xl border-4 border-amber-200 mb-8">
+            <div class="bg-amber-50 p-6 rounded-2xl border-4 border-amber-200 mb-6">
                 <p id="complete-message" class="text-xl font-bold text-amber-800 mb-4"></p>
                 <div class="text-6xl mb-2">⭐⭐⭐</div>
+            </div>
+
+            <!-- Submission Status Area -->
+            <div id="submission-status-container" class="mb-6 p-4 rounded-xl border-2 border-slate-200 bg-slate-50 text-sm font-bold text-slate-700 flex flex-col items-center gap-2">
+                <span id="submission-message">Preparing to save results...</span>
+                <button id="btn-retry-submit" class="btn btn-secondary py-1 px-4 text-sm hidden" onclick="retrySubmission()">Retry Submission</button>
             </div>
 
             <div class="flex flex-col sm:flex-row gap-4 justify-center">
@@ -549,8 +580,21 @@
             }
         ];
 
+        // --- GOOGLE SHEETS CONFIGURATION ---
+        // Replace this URL with your deployed Google Apps Script Web App URL
+        const GOOGLE_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbywxw__pnzlgCOprcWEIkNpPzNZEIx_sA3r1EscUQ-K6NxO2oZ6D1yXPFIkVs0yenYW/exec";
+
         // --- GAME STATE ---
         let gameState = {
+            studentId: "",
+            studentClass: "",
+            levelAttempts: {}, // Tracks { levelId: attemptCount }
+            currentLevelRun: { // Tracks stats for the CURRENT active run of a level
+                mistakes: new Set(),
+                correctFirstTry: 0
+            },
+            lastSubmissionPayload: null, // Used for retries
+
             currentLevelIndex: 0,
             isQuickAccess: false,
             stars: 0,
@@ -614,6 +658,22 @@
         }
 
         // --- SCREEN MANAGEMENT ---
+        function loginStudent() {
+            const idInput = document.getElementById('student-id').value.trim();
+            const classInput = document.getElementById('student-class').value.trim();
+            const errorMsg = document.getElementById('login-error');
+            
+            if (!idInput) {
+                errorMsg.classList.remove('hidden');
+                return;
+            }
+            
+            errorMsg.classList.add('hidden');
+            gameState.studentId = idInput;
+            gameState.studentClass = classInput;
+            showScreen('screen-main-menu');
+        }
+
         function showScreen(screenId, asQuickAccess = false) {
             // Hide all screens
             screens.forEach(s => s.classList.remove('active'));
@@ -674,6 +734,13 @@
             const lvl = gameData[gameState.currentLevelIndex];
             document.getElementById('reading-passage').innerText = lvl.passage;
             gameState.currentQuestionIndex = 0;
+
+            // Reset run stats for this specific attempt
+            gameState.currentLevelRun = {
+                mistakes: new Set(),
+                correctFirstTry: 0
+            };
+
             loadQuestion();
             
             // Hide interact button while reading
@@ -734,7 +801,12 @@
                 fbArea.classList.add('bg-green-100', 'text-green-800');
                 fbText.innerText = "Excellent! You found the correct answer.";
                 
-                // Add star if not answered before
+                // Track current run accuracy (if they haven't made a mistake on this question in this run)
+                if (!gameState.currentLevelRun.mistakes.has(gameState.currentQuestionIndex)) {
+                    gameState.currentLevelRun.correctFirstTry += 1;
+                }
+
+                // Add star if not answered before (Global cumulative progress)
                 const qKey = `${lvl.id}_${gameState.currentQuestionIndex}`;
                 if (!gameState.answeredQuestions.has(qKey)) {
                     gameState.answeredQuestions.add(qKey);
@@ -755,6 +827,7 @@
             } else {
                 // INCORRECT
                 soundIncorrect();
+                gameState.currentLevelRun.mistakes.add(gameState.currentQuestionIndex);
                 btnElement.classList.add('incorrect');
                 fbArea.classList.add('bg-red-100', 'text-red-800');
                 fbText.innerText = "Good try! Read the passage again to look for a clue. " + qData.explanation;
@@ -778,6 +851,12 @@
             gameState.completedLevels.add(lvl.id);
             updateProgressUI();
             
+            // Increment attempt count for this specific level
+            if (!gameState.levelAttempts[lvl.id]) {
+                gameState.levelAttempts[lvl.id] = 0;
+            }
+            gameState.levelAttempts[lvl.id] += 1;
+            
             const msgs = [
                 "Great job, Chore Explorer! You found all the answers and helped Aina tidy her bedroom!",
                 "Wonderful work! You understood the kitchen story and helped Amir's family!",
@@ -797,6 +876,103 @@
             }
             
             showScreen('screen-level-complete');
+            
+            // Automatically submit results
+            submitLevelResult(lvl);
+        }
+
+        // --- GOOGLE SHEETS INTEGRATION ---
+        async function submitLevelResult(lvl) {
+            const statusContainer = document.getElementById('submission-status-container');
+            const statusMsg = document.getElementById('submission-message');
+            const retryBtn = document.getElementById('btn-retry-submit');
+            
+            // Reset UI State
+            statusContainer.className = "mb-6 p-4 rounded-xl border-2 border-slate-200 bg-slate-50 text-sm font-bold text-slate-700 flex flex-col items-center gap-2";
+            statusMsg.innerText = "Saving your results...";
+            retryBtn.classList.add('hidden');
+            
+            if (GOOGLE_APPS_SCRIPT_URL === "YOUR_WEB_APP_URL_HERE" || !GOOGLE_APPS_SCRIPT_URL) {
+                statusMsg.innerText = "Result saved locally. (Teacher has not connected the database yet).";
+                statusContainer.classList.replace('bg-slate-50', 'bg-yellow-50');
+                statusContainer.classList.replace('border-slate-200', 'border-yellow-200');
+                return;
+            }
+
+            const questionsCorrect = gameState.currentLevelRun.correctFirstTry;
+            const totalQuestions = lvl.questions.length;
+            const scorePercentage = Math.round((questionsCorrect / totalQuestions) * 100);
+            
+            // Unique ID to prevent Google Apps Script from recording duplicate entries if the student clicks retry.
+            const uniqueId = `sub_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+
+            const payload = {
+                submissionId: uniqueId,
+                studentId: gameState.studentId,
+                studentClass: gameState.studentClass,
+                gameTitle: "Chore Quest 3D",
+                levelNumber: lvl.id,
+                levelName: lvl.title,
+                correctAnswers: questionsCorrect,
+                totalQuestions: totalQuestions,
+                starsEarned: questionsCorrect, // Earned this run
+                maxStars: totalQuestions,
+                scorePercentage: scorePercentage,
+                completionStatus: "Completed",
+                gameMode: gameState.isQuickAccess ? "Quick Access" : "3D Adventure",
+                attemptNumber: gameState.levelAttempts[lvl.id]
+            };
+            
+            gameState.lastSubmissionPayload = payload;
+            await sendPayload(payload);
+        }
+        
+        async function retrySubmission() {
+            if (gameState.lastSubmissionPayload) {
+                const statusMsg = document.getElementById('submission-message');
+                const retryBtn = document.getElementById('btn-retry-submit');
+                
+                statusMsg.innerText = "Retrying submission...";
+                retryBtn.classList.add('hidden');
+                
+                await sendPayload(gameState.lastSubmissionPayload);
+            }
+        }
+
+        async function sendPayload(payload) {
+            const statusContainer = document.getElementById('submission-status-container');
+            const statusMsg = document.getElementById('submission-message');
+            const retryBtn = document.getElementById('btn-retry-submit');
+
+            try {
+                // Sent as text/plain so the browser doesn't send an OPTIONS pre-flight request, which Apps Script struggles with.
+                const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    if (result.success) {
+                        statusMsg.innerText = "Your results have been submitted!";
+                        statusContainer.classList.replace('bg-slate-50', 'bg-green-50');
+                        statusContainer.classList.replace('border-slate-200', 'border-green-200');
+                        statusContainer.classList.replace('text-slate-700', 'text-green-800');
+                    } else {
+                        throw new Error(result.error || "Server rejected submission");
+                    }
+                } else {
+                    throw new Error("Network response was not ok");
+                }
+            } catch (error) {
+                console.error("Submission Error:", error);
+                statusMsg.innerText = "Your results could not be confirmed. Please tell your teacher.";
+                statusContainer.classList.replace('bg-slate-50', 'bg-red-50');
+                statusContainer.classList.replace('border-slate-200', 'border-red-200');
+                statusContainer.classList.replace('text-slate-700', 'text-red-800');
+                retryBtn.classList.remove('hidden');
+            }
         }
 
         function playNextLevel() {
